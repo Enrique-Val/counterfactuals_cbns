@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import multiprocess as mp
 
 from exp_models import get_large_backdoor_scm, get_weak_arrow_scm, get_large_backdoor_cbn
+import argparse
 
 def compute_marginal_means(model : Model):
     """Returns dict of marginal means for X1-X7"""
@@ -191,6 +192,11 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
     return pd.DataFrame(combined_results), average_var_mat, matrix_univariate
 
 if __name__ == "__main__" :
+    # Add command line args
+    parser = argparse.ArgumentParser(description="Run causal experiments with SCM and CBN models.")
+    parser.add_argument('--parallel', action='store_true', help="Run experiments in parallel")
+    args = parser.parse_args()
+
     #mp.set_start_method('spawn')
     N = 10000000
     eps = 0.05
@@ -239,7 +245,7 @@ if __name__ == "__main__" :
 
     # Run the full experiment suite
     t0 = time.time()
-    results, mat, mat_univariate = full_experiment_suite(scm, cbn, N, eps, parallel=False)
+    results, mat, mat_univariate = full_experiment_suite(scm, cbn, N, eps, parallel=args.parallel)
     t1 = time.time()
     print(f"Experiment completed in {t1 - t0:.2f} seconds.")
     # Save result to json
