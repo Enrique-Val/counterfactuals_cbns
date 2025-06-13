@@ -131,18 +131,18 @@ class Model:
     def intervene_data(self, data: pd.DataFrame, intervention_list: dict, method = "root_nodes", random_state: int = 42) -> pd.DataFrame:
         all_columns = data.columns
         if method == "root_nodes":
-            data = data[self.get_root_nodes()]
+            data = data[self.get_root_nodes()].copy()
         elif method == "non_descendants":
             total_non_descendants = set()
             for i in intervention_list.keys():
                 total_non_descendants = total_non_descendants.intersection(set(self.get_non_descendants(i)))
-            data = data[list(total_non_descendants)]
+            data = data[list(total_non_descendants)].copy()
         else:
             raise Exception("Method not recognized. Please use 'root_nodes' or 'non_descendants'")
         for i in intervention_list.keys():
             if i not in all_columns:
                 raise Exception('Node ', i[0], " not present in the model")
-            data.loc[:, i] = intervention_list[i]
+            data[i] = intervention_list[i]
         data = self.causal_inference(data, random_state=random_state)
         return data
 

@@ -1,18 +1,15 @@
 import itertools
+import time
+from functools import partial
 
 import networkx as nx
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, laplace
 
-from causal_ale.build_model import ModelBuilder
 from causal_ale.model import Model
 import matplotlib.pyplot as plt
 
-from causal_ale.pyro_utils import layer
-from causal_ale.utils import make_equation
-
-import seaborn as sns
+import multiprocess as mp
 
 from exp_models import get_large_backdoor_scm, get_weak_arrow_scm, get_large_backdoor_cbn
 
@@ -32,117 +29,142 @@ def compute_marginal_means(model : Model):
         'x8': np.mean(samples['x8'])
     }
 
-def full_experiment_suite(model : Model, model_cbn : Model, n_samples, eps):
+
+def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs,
+                             all_vars, joint_data):
+    local_results = []
+    local_result_mat = np.zeros((9, 2))
+    local_count_mat = np.zeros((9, 2))
+
+    k = len(observation_vars)
+    obs_index = k - 1
+    observation_set = {v: marginal_means[v] for v in observation_vars}
+    observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps)
+    observational_data_cbn = observational_data_scm[all_vars]  # CBN uses the same observational data
+
+    # Ancestor set
+    ancestor_set = set()
+    for v in observation_vars:
+        ancestor_set.update(nx.ancestors(model.get_graph(), v))
+    ancestral_u_set = set(model.get_root_nodes()).intersection(ancestor_set)
+
+    for intervention_vars in intervention_combs:
+        int_index = len(intervention_vars) - 1
+        intervention_set = {v: marginal_means[v] for v in intervention_vars}
+
+        # Check d-separation
+        if nx.is_d_separator(model.get_graph(), set(["x8"]), ancestral_u_set, set(intervention_vars)):
+            print("Skipped")
+            print(
+                f"Skipping intervention {intervention_vars} with observations {observation_vars} due to d-separation condition.")
+            x8_samples = model.intervene_data(joint_data, intervention_list=intervention_set,
+                                              method='non_descendants')
+            x8_samples = x8_samples['x8']
+            local_results.append({
+                'model': 'SCM',
+                'intervention_vars': intervention_vars,
+                'observation_vars': observation_vars,
+                'x8_mean': np.mean(x8_samples),
+                'x8_var': np.var(x8_samples)
+            })
+            local_results.append({
+                'model': 'CBN',
+                'intervention_vars': intervention_vars,
+                'observation_vars': observation_vars,
+                'x8_mean': np.mean(x8_samples),
+                'x8_var': np.var(x8_samples)
+            })
+        else:
+            print(f"Running SCM experiment with interventions: {intervention_vars}, observations: {observation_vars}")
+
+            x8_samples_scm = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
+                                                  method='root_nodes')
+            x8_samples_scm = x8_samples_scm['x8']
+
+            local_results.append({
+                'model' : 'SCM',
+                'intervention_vars': intervention_vars,
+                'observation_vars': observation_vars,
+                'x8_mean': np.mean(x8_samples_scm),
+                'x8_var': np.var(x8_samples_scm)
+            })
+
+            print(f"Running CBN experiment with interventions: {intervention_vars}, observations: {observation_vars}")
+
+            x8_samples_cbn = model_cbn.intervene_data(observational_data_cbn, intervention_list=intervention_set,
+                                                      method='non_descendants')
+            x8_samples_cbn = x8_samples_cbn['x8']
+
+            local_results.append({
+                'model': 'CBN',
+                'intervention_vars': intervention_vars,
+                'observation_vars': observation_vars,
+                'x8_mean': np.mean(x8_samples_cbn),
+                'x8_var': np.var(x8_samples_cbn)
+            })
+            local_result_mat[obs_index, int_index] += np.var(x8_samples_cbn) - np.var(x8_samples_scm)
+        local_count_mat[obs_index, int_index] += 1
+
+    return local_results, local_result_mat, local_count_mat
+
+
+def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parallel=True):
     marginal_means = compute_marginal_means(model)
-    results = []
-    result_mat = np.zeros((9,2))
-    count_mat = np.zeros((9,2))
-
     joint_data = model.generate_data(1000)
-
-    '''x8_marginal = model.generate_data(n_samples)
-    x8_marginal = x8_marginal['x8']
-    results.append({
-        'intervention_vars': [],
-        'observation_vars': [],
-        'x8_mean': np.mean(x8_marginal),
-        'x8_std': np.std(x8_marginal)
-    })'''
 
     # Generate all non-empty subsets of X1-X7
     total_iters = 0
     skipped_iters = 0
     intervention_combs = [("x" + str(i),) for i in range(0, 8)]  # X1 to X7
-    # Consider combination of x0 with the rest of the variables
-    intervention_combs += [("x0", "x" + str(i)) for i in range(1, 8)][-2:]  # X0 with X1 to X7
-    # Consider the product of ["x1","x3","x5","x7"] with the ["x2","x4","x6"] variables
-    intervention_combs += list(itertools.product(["x1", "x3", "x5", "x7"], ["x2", "x4", "x6"]))[-2:]
+    intervention_combs += [("x0", "x" + str(i)) for i in range(1, 8)]  # X0 with X1 to X7
+    intervention_combs += list(itertools.product(["x1", "x3", "x5", "x7"], ["x2", "x4", "x6"]))
     all_vars = ['x' + str(i) for i in range(0, 9)]  # X1 to X7
-    for k in range(1, len(all_vars) + 1-7):
-        obs_index = k - 1
-        for observation_vars in list(itertools.combinations(all_vars, k))[:2]:
-            observation_set = {v: marginal_means[v] for v in observation_vars}
-            observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps)
-            observational_data_cbn = model_cbn.get_observational_data(n_samples, observation_list=observation_set, eps=eps, is_scm=False)
-            # Ancestor set
-            ancestor_set = set()
-            for v in observation_vars:
-                ancestor_set.update(nx.ancestors(model.get_graph(), v))
 
-            ancestral_u_set = set(model.get_root_nodes()).intersection(ancestor_set)
-
-            for intervention_vars in intervention_combs:
-                int_index = len(intervention_vars) - 1
-                # Create intervention/observation dicts
-                intervention_set = {v: marginal_means[v] for v in intervention_vars}
-
-                # Check if ancestors of observations that are also root nodes are d-separated
-                # from x_8 given the intervened nodes
-
-                # Check d-separation
-                if nx.is_d_separator(model.get_graph(), set(["x8"]), ancestral_u_set, set(intervention_vars)):
-                    print("Skipped")
-                    print(f"Skipping intervention {intervention_vars} with observations {observation_vars} due to d-separation condition.")
-                    x8_samples = model.intervene_data(joint_data, intervention_list=intervention_set,
-                                                      method='non_descendants')
-                    x8_samples = x8_samples['x8']
-                    results.append({
-                        'intervention_vars': intervention_vars,
-                        'observation_vars': observation_vars,
-                        'x8_mean': np.mean(x8_samples),
-                        'x8_var': np.var(x8_samples)
-                    })
-                    results.append({
-                        'intervention_vars': intervention_vars,
-                        'observation_vars': observation_vars,
-                        'x8_mean': np.mean(x8_samples),
-                        'x8_var': np.var(x8_samples)
-                    })
-                    skipped_iters += 1
+    # Prepare arguments for parallel processing
+    observation_combinations = []
+    for k in range(1, len(all_vars) + 1):
+        observation_combinations.extend(list(itertools.combinations(all_vars, k)))
 
 
-                else :
-                    print(f"Running SCM experiment with interventions: {intervention_vars}, observations: {observation_vars}")
+    if not parallel:
+        results = []
+        for observation_combination in observation_combinations:
+            results.append(process_observation_vars(observation_combination, model, model_cbn, n_samples, eps,
+                                     marginal_means, intervention_combs, all_vars, joint_data))
+    else :
+        pool = mp.Pool(processes=mp.cpu_count()-1)
+        results = pool.starmap(
+            process_observation_vars,
+            [(obs_comb, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars, joint_data)
+             for obs_comb in observation_combinations]
+        )
+        pool.close()
+        pool.join()
 
-                    x8_samples_scm = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
-                                                      method = 'root_nodes')
 
-                    x8_samples_scm = x8_samples_scm['x8']
+    # Combine results
+    combined_results = []
+    combined_result_mat = np.zeros((9, 2))
+    combined_count_mat = np.zeros((9, 2))
 
-                    results.append({
-                        'intervention_vars': intervention_vars,
-                        'observation_vars': observation_vars,
-                        'x8_mean': np.mean(x8_samples_scm),
-                        'x8_var': np.var(x8_samples_scm)
-                    })
+    for result in results:
+        res, res_mat, count_mat = result
+        combined_results.extend(res)
+        combined_result_mat += res_mat
+        combined_count_mat += count_mat
 
-                    print(f"Running CBN experiment with interventions: {intervention_vars}, observations: {observation_vars}")
-
-                    # Run experiment
-                    x8_samples_cbn = model_cbn.intervene_data(observational_data_cbn, intervention_list=intervention_set,
-                                                          method='non_descendants')
-
-                    x8_samples_cbn = x8_samples_cbn['x8']
-
-                    results.append({
-                        'intervention_vars': intervention_vars,
-                        'observation_vars': observation_vars,
-                        'x8_mean': np.mean(x8_samples_cbn),
-                        'x8_var': np.var(x8_samples_cbn)
-                    })
-                    result_mat[obs_index, int_index] += np.var(x8_samples_cbn) - np.var(x8_samples_scm)
-                total_iters += 1
-                count_mat[obs_index, int_index] += 1
+    # Calculate total iterations
+    total_iters = np.sum(combined_count_mat)
+    skipped_iters = total_iters - np.count_nonzero(combined_result_mat)
 
     print(f"Total iterations: {total_iters}, Skipped iterations: {skipped_iters}")
-    # Calculate average variance for each observation set and intervention set using elementwise division
-    average_var_mat = np.divide(result_mat, count_mat)
+    average_var_mat = np.divide(combined_result_mat, combined_count_mat)
 
-
-    return pd.DataFrame(results), average_var_mat
+    return pd.DataFrame(combined_results), average_var_mat
 
 if __name__ == "__main__" :
-    N = 1000000
+    #mp.set_start_method('spawn')
+    N = 10000000
     eps = 0.05
     scm = get_large_backdoor_scm()
     cbn = get_large_backdoor_cbn()
@@ -188,7 +210,13 @@ if __name__ == "__main__" :
 
 
     # Run the full experiment suite
-    results, mat = full_experiment_suite(scm, cbn, N, eps)
+    t0 = time.time()
+    results, mat = full_experiment_suite(scm, cbn, N, eps, parallel=True)
+    t1 = time.time()
+    print(f"Experiment completed in {t1 - t0:.2f} seconds.")
     # Save result to json
     results.to_json("results.json", orient="records", lines=True)
+    # Save matrix to csv
+    mat = pd.DataFrame(mat, columns=["Intervention 1", "Intervention 2"], index=[f"Observation {i+1}" for i in range(9)])
+    mat.to_csv("result_matrix.csv", index=True)
     print(mat)
