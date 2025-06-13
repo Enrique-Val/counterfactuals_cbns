@@ -11,6 +11,7 @@ class ModelBuilder:
     def __init__(self, variables, name = ""):
         self.nodes = variables
         self.equations = list()
+        self.inverse_equations = []
         self.name = name
         self.var_dict = bidict({i: var for i, var in enumerate(self.nodes)})
 
@@ -19,6 +20,9 @@ class ModelBuilder:
 
     def add_equation(self, variable, parents=None, function=utils.identity, noise=norm(0, 0)):
         self.equations.append(utils.make_equation(variable, parents, function, noise, self.var_dict))
+
+    def add_inverse_equation(self, variable, parents=None, function=utils.identity, noise=norm(0, 0)):
+        self.inverse_equations.append(utils.make_equation(variable, parents, function, noise, self.var_dict))
 
     def build(self):
         #print(self.equations)
@@ -30,4 +34,4 @@ class ModelBuilder:
         raw_model = structural_causal_model.StructuralCausalModel(name=self.name,
                                                              nb_var=len(self.equations),
                                                              structural_equations=self.equations)
-        return Model(model=raw_model, var_dict=self.var_dict)#, var_type=self.var_type)
+        return Model(model=raw_model, var_dict=self.var_dict, inverse_functions=self.inverse_equations)#, var_type=self.var_type)

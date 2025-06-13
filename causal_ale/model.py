@@ -2,6 +2,8 @@ import networkx as nx
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
+from scipy.stats import norm
+from sklearn.model_selection import GridSearchCV
 
 from causal_ale import utils
 
@@ -12,11 +14,15 @@ DEFAULT_NB_SAMPLES = 100000
 SF_THRESH = 2
 
 
+
+
+
 class Model:
-    def __init__(self, model: structural_causal_model, var_dict):
-        self.model = model
+    def __init__(self, model: structural_causal_model.StructuralCausalModel, var_dict, inverse_functions = None):
+        self.model : structural_causal_model.StructuralCausalModel = model
         self.var_dict = var_dict
         self.original_equations = set()
+        self.inverse_functions = [] if None else inverse_functions
 
     #############
     ## GETTERS ##
@@ -120,6 +126,224 @@ class Model:
             np.random.seed(random_state)
         data = self.model.generate_data(nb_samples)
         data = data.rename(self.var_dict, axis='columns')
+        return data
+
+    def intervene_data(self, data: pd.DataFrame, intervention_list: dict, method = "root_nodes", random_state: int = 42) -> pd.DataFrame:
+        all_columns = data.columns
+        if method == "root_nodes":
+            data = data[self.get_root_nodes()]
+        elif method == "non_descendants":
+            total_non_descendants = set()
+            for i in intervention_list.keys():
+                total_non_descendants = total_non_descendants.intersection(set(self.get_non_descendants(i)))
+            data = data[list(total_non_descendants)]
+        else:
+            raise Exception("Method not recognized. Please use 'root_nodes' or 'non_descendants'")
+        for i in intervention_list.keys():
+            if i not in all_columns:
+                raise Exception('Node ', i[0], " not present in the model")
+            data.loc[:, i] = intervention_list[i]
+        data = self.causal_inference(data, random_state=random_state)
+        return data
+
+    def get_observational_data(self, nb_samples: int, observation_list, eps=1e-8, random_state: int = 42, is_scm = False) -> pd.DataFrame:
+        """
+        Generate data from the model with the given observations.
+
+        Parameters
+        ----------
+        observation_list : dict
+            The list of observations to be used in the generation of the data.
+        nb_samples : int
+            The number of samples to generate.
+        random_state : int
+            The random state to be used in the generation of the data. Optional.
+
+        Returns
+        -------
+        pd.DataFrame
+            The generated data.
+        """
+        data = self.generate_data(nb_samples, random_state)
+        if not is_scm:
+            unobserved_vars = set(self.get_variables()).difference(set(observation_list.keys()))
+            joint_markov_blanket = self.joint_markov_blanket(list(unobserved_vars))
+            # If the whole Markov blanket is observed, we can just filter it and ignore the rest
+            observed_in_mb = list(set(observation_list.keys()).intersection(set(joint_markov_blanket)))
+            non_mb_vars = list(set(list(observation_list.keys())).difference(set(joint_markov_blanket)))
+        else:
+            # Same as before, but remove the root nodes from the joint markov blanket
+            unobserved_vars = set(self.get_variables()).difference(set(observation_list.keys()))
+            unobserved_vars = unobserved_vars.difference(set(self.get_root_nodes()))
+            joint_markov_blanket = self.joint_markov_blanket(list(unobserved_vars))
+            observed_in_mb = list(set(observation_list.keys()).intersection(set(joint_markov_blanket)))
+            non_mb_vars = list(set(list(observation_list.keys())).difference(set(joint_markov_blanket)))
+        for i in observed_in_mb:
+            if i not in data.columns:
+                raise Exception('Node ', i, " not present in the model")
+            data = data[data[i] < observation_list[i] + eps]
+            data = data[data[i] > observation_list[i] - eps]
+        data = data.reset_index(drop=True)
+        # Now, we just pass the values of the non-markov blanket variables
+        for i in non_mb_vars:
+            if i not in data.columns:
+                raise Exception('Node ', i, " not present in the model")
+            data[i] = observation_list[i]
+        # Now, if it is a SCM, we still need to compute the values of the exogenous variables
+        if is_scm:
+            data = self.fill_exogenous_data(data)
+        # Let's do that in an a
+        if data.shape[0] == 0:
+            raise Exception('No data generated with the given observations')
+        return data
+
+    def get_observational_data_kde(self, nb_samples: int, observation_list, eps=1e-8, random_state: int = 42,
+                                   functional = True, cv=2) -> pd.DataFrame:
+        """
+        Generate data from the model with the given observations.
+
+        Parameters
+        ----------
+        observation_list : dict
+            The list of observations to be used in the generation of the data.
+        nb_samples : int
+            The number of samples to generate.
+        random_state : int
+            The random state to be used in the generation of the data. Optional.
+
+        Returns
+        -------
+        pd.DataFrame
+            The generated data.
+        """
+        data = self.generate_data(nb_samples, random_state)
+        # First filter data
+        for i in observation_list.keys():
+            if i not in data.columns:
+                raise Exception('Node ', i, " not present in the model")
+            data = data[data[i] < observation_list[i] + eps*10]
+            data = data[data[i] > observation_list[i] - eps*10]
+        weights = np.zeros(data.shape[0])
+        for i in observation_list.keys():
+            weighting_norm = norm(observation_list[i], eps)
+            if i not in data.columns:
+                raise Exception('Node ', i, " not present in the model")
+            # Weight the data according to the observation
+            weights += weighting_norm.pdf(data[i])
+        # Normalize the weights
+        # Substitute NaN values with 0
+        weights = np.exp(weights)
+        weights[np.isnan(weights)] = 0
+        weights /= np.sum(weights)
+        # Sample the data according to the weights. First, learn join distribution of the data via KDE
+        if functional:
+            root_nodes = self.get_root_nodes()
+            data_exog = data[root_nodes]
+            # Learn KDE using sklearn
+            from sklearn.neighbors import KernelDensity
+            #kde_learned = KernelDensity(kernel='gaussian', bandwidth=eps)
+            #kde_learned.fit(data_exog, sample_weight=weights)
+            # Repeat the learning, but use grid-search and cross validate
+            rang = np.logspace(-3, 0, 10)  # Bandwidth range for grid search
+            gs_results = GridSearchCV(KernelDensity(kernel='gaussian'), {'bandwidth': rang}, cv=cv, n_jobs=-1)
+            gs_results.fit(data_exog, sample_weight=weights)
+            kde_learned = gs_results.best_estimator_
+            # Sample from the learned KDE
+            sampled_data_exog = kde_learned.sample(nb_samples, random_state=random_state)
+            sampled_data_exog = pd.DataFrame(sampled_data_exog, columns=root_nodes)
+            # Now, we need to compute the values of the endogenous variables
+            resample = self.causal_inference(sampled_data_exog, random_state=random_state)
+            # Concatenate the exogenous and endogenous variables
+            return resample
+        else :
+            from sklearn.neighbors import KernelDensity
+            # Sample the data according to the weights
+            kde_learned = KernelDensity(kernel='gaussian')
+            kde_learned.fit(data, sample_weight=weights)
+            sampled_data = kde_learned.sample(nb_samples, random_state=random_state)
+            sampled_data = pd.DataFrame(sampled_data, columns=data.columns)
+            return sampled_data
+
+        if data.shape[0] == 0:
+            raise Exception('No data generated with the given observations')
+        return data
+
+    def get_interventional_data(self, nb_samples: int, intervention_list : dict, random_state: int = 42) -> pd.DataFrame:
+        """
+        Generate data from the model with the given interventions.
+        Parameters
+        ----------
+        intervention_list : dict
+            The list of interventions to be used in the generation of the data.
+        nb_samples : int
+            The number of samples to generate.
+        random_state : int
+            The random state to be used in the generation of the data. Optional.
+        Returns
+        -------
+        pd.DataFrame
+            The generated data.
+
+        """
+
+        toy_data = self.generate_data(1)
+        for i in intervention_list:
+            if i not in toy_data.columns:
+                raise Exception('Node ', i, " not present in the model")
+            self.perform_intervention(utils.make_equation(i, noise=norm(intervention_list[i],0), var_dict=self.var_dict))
+        data = self.generate_data(nb_samples, random_state)
+        self.delete_all_interventions()
+        return data
+
+    def get_counterfactual_data(self, nb_samples: int, observation_list, intervention_list,
+                                eps = 1e-8, random_state: int = 42, is_scm = True) -> pd.DataFrame:
+        """
+        Generate data from the model with the given observations and interventions.
+        Parameters
+        ----------
+        observation_list : dict
+            The list of observations to be used in the generation of the data.
+        intervention_list : dict
+            The list of interventions to be used in the generation of the data.
+        method : str
+            The method to be used for the counterfactual generation, specifically regarding the abduction phase.
+            The options are "root_nodes" (recommended for SCMs where the noise is modelled as a variable) and
+            "non_descendants" (recommended for CBNs where the noise is not modelled as a variable).
+        nb_samples : int
+            The number of samples to generate.
+        random_state : int
+            The random state to be used in the generation of the data. Optional.
+        Returns
+        -------
+        pd.DataFrame
+            The generated data.
+
+        """
+
+
+        data = self.get_observational_data(nb_samples, observation_list=observation_list, eps=eps,
+                                           random_state=random_state, is_scm=is_scm)
+        return self.intervene_data(data, intervention_list, method="root_nodes" if is_scm else "non_descendants",
+                                   random_state=random_state)
+
+    def fill_exogenous_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Given data of the endogenous variables (not root nodes in an SCM), get the values of the exogenous variables
+        """
+
+        root_nodes = self.get_root_nodes()
+        endogenous_vars = set(self.get_variables()).difference(set(root_nodes))
+        # Check that the dataframe contains all the endogenous variables and there are no nans over them
+        if not endogenous_vars.issubset(set(data.columns)):
+            raise Exception('Data does not contain all the endogenous variables. Missing: ',
+                            list(endogenous_vars.difference(set(data.columns))))
+        if data[list(endogenous_vars)].isnull().values.any():
+            raise Exception('Data contains NaN values over the endogenous variables. Please provide a complete dataset.')
+
+        data = data.copy()
+        for structural_equation in self.inverse_functions:
+            if not self.var_dict[structural_equation.index_lhs] in data.columns:
+                data = structural_equation.generate_data(data)
         return data
 
     ###################
@@ -276,6 +500,73 @@ class Model:
         graph = self.get_graph()
         return [i for i in self.get_variables() if i not in nx.descendants(graph, node) and i != node]
 
+    def get_markov_blanket(self, node):
+        """
+            Find the Markov blanket of a node in a directed graph.
+
+            The Markov blanket of a node consists of:
+            1. Its parents
+            2. Its children
+            3. The other parents of its children (spouses)
+
+            Parameters:
+            -----------
+            node : str
+                The target node whose Markov blanket we want to find
+
+            Returns:
+            --------
+            set
+                A set of nodes comprising the Markov blanket (excluding the node itself)
+            """
+        graph = self.get_graph()
+
+        if node not in graph:
+            raise ValueError(f"Node {node} not found in the graph")
+
+        # Get parents of the node
+        parents = set(graph.predecessors(node))
+
+        # Get children of the node
+        children = set(graph.successors(node))
+
+        # Get spouses (other parents of children)
+        spouses = set()
+        for child in children:
+            spouses.update(graph.predecessors(child))
+        spouses.discard(node)  # Remove the node itself if it was included
+
+        # Combine all components of the Markov blanket
+        markov_blanket = parents.union(children).union(spouses)
+
+        return markov_blanket
+
+    def joint_markov_blanket(self, nodes : list):
+        """
+        Find the joint Markov blanket of a set of nodes in a directed graph.
+
+        The joint Markov blanket of a set of nodes consists of:
+        1. Their parents
+        2. Their children
+        3. The other parents of their children (spouses)
+
+        Parameters
+        ----------
+        nodes : list
+            The list of nodes whose joint Markov blanket we want to find
+
+        Returns
+        -------
+        set
+            A set of nodes comprising the joint Markov blanket (excluding the nodes themselves)
+        """
+        markov_blanket = set()
+        for node in nodes:
+            markov_blanket.update(set(self.get_markov_blanket(node)))
+        # Remove the nodes themselves
+        markov_blanket = markov_blanket.difference(set(nodes))
+        return list(markov_blanket.difference(set(nodes)))
+
     def causal_inference(self, input_data: pd.DataFrame = None, random_state=None):
         """
         Performs inference in the network. Every variable in input data is considered as intervened, NOT observed.
@@ -309,6 +600,7 @@ class Model:
             index=index,
         )
         data.values[:] = np.nan
+
 
         for i in input_data.columns:
             data[self.var_dict.inverse[i]] = input_data[i]
