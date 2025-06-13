@@ -29,6 +29,28 @@ def compute_marginal_means(model : Model):
         'x8': np.mean(samples['x8'])
     }
 
+def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_vars) :
+    # An additional experiment with only one variable intervened and observed. Store excess variance in matrix
+    matrix_univariate = np.zeros((9, 8))
+    univariate_int_combs = [{"x" + str(i): marginal_means["x" + str(i)]} for i in range(0, 8)]  # X1 to X7
+    for i in range(9):
+        observation_var = f"x{i}"
+        observation_set = {observation_var: marginal_means[observation_var]}
+        observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps)
+        observational_data_cbn = observational_data_scm[all_vars]  # CBN uses the same observational data
+        for j, intervention_set in enumerate(univariate_int_combs):
+            x8_samples_scm = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
+                                                  method='root_nodes')
+            x8_samples_scm = x8_samples_scm['x8']
+            x8_samples_cbn = model_cbn.intervene_data(observational_data_cbn, intervention_list=intervention_set,
+                                                      method='non_descendants')
+            x8_samples_cbn = x8_samples_cbn['x8']
+            matrix_univariate[i, j] = np.var(x8_samples_cbn) - np.var(x8_samples_scm)
+
+    matrix_univariate = pd.DataFrame(matrix_univariate, columns=[f"Intervening x{i}" for i in range(8)],
+                                     index=[f"Observing x{i}" for i in range(9)])
+    return matrix_univariate
+
 
 def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs,
                              all_vars, joint_data):
@@ -157,10 +179,16 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
     total_iters = np.sum(combined_count_mat)
     skipped_iters = total_iters - np.count_nonzero(combined_result_mat)
 
+    # An additional experiment with only one variable intervened and observed. Store excess variance in matrix
+    matrix_univariate = univariate_experiment(model, model_cbn, n_samples, eps, marginal_means, all_vars)
+
     print(f"Total iterations: {total_iters}, Skipped iterations: {skipped_iters}")
     average_var_mat = np.divide(combined_result_mat, combined_count_mat)
 
-    return pd.DataFrame(combined_results), average_var_mat
+    average_var_mat = pd.DataFrame(average_var_mat, columns=["Intervention 1", "Intervention 2"], index=[f"Observation {i+1}" for i in range(9)])
+
+
+    return pd.DataFrame(combined_results), average_var_mat, matrix_univariate
 
 if __name__ == "__main__" :
     #mp.set_start_method('spawn')
@@ -211,12 +239,14 @@ if __name__ == "__main__" :
 
     # Run the full experiment suite
     t0 = time.time()
-    results, mat = full_experiment_suite(scm, cbn, N, eps, parallel=True)
+    results, mat, mat_univariate = full_experiment_suite(scm, cbn, N, eps, parallel=False)
     t1 = time.time()
     print(f"Experiment completed in {t1 - t0:.2f} seconds.")
     # Save result to json
     results.to_json("results.json", orient="records", lines=True)
     # Save matrix to csv
-    mat = pd.DataFrame(mat, columns=["Intervention 1", "Intervention 2"], index=[f"Observation {i+1}" for i in range(9)])
     mat.to_csv("result_matrix.csv", index=True)
+    # Save univariate matrix to csv
+    mat_univariate.to_csv("univariate_matrix.csv", index=True)
     print(mat)
+    print(mat_univariate)

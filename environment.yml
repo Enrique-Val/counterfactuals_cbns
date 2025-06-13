@@ -15,7 +15,6 @@ dependencies:
   - expat=2.6.4
   - fonttools=4.55.3
   - freetype=2.12.1
-  - icc_rt=2022.1.0
   - icu=73.1
   - intel-openmp=2023.1.0
   - jax=0.4.35
@@ -78,8 +77,6 @@ dependencies:
   - tornado=6.4.2
   - tzdata=2025a
   - unicodedata2=15.1.0
-  - vc=14.42
-  - vs2015_runtime=14.42.34433
   - wheel=0.45.1
   - xz=5.6.4
   - zlib=1.2.13
