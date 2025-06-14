@@ -164,7 +164,24 @@ class Model:
         pd.DataFrame
             The generated data.
         """
+
         data = self.generate_data(nb_samples, random_state)
+        graph = self.get_graph()
+        if is_scm :
+            # Create a subgraph without the root nodes
+            end_vars = self.get_variables()
+            end_vars = [i for i in end_vars if i not in self.get_root_nodes()]
+            graph = nx.subgraph(graph, end_vars)
+        pi_nodes = {}
+        # Iterate over an ancestral ordering of the subgraph
+        for i in observation_list.keys():
+            # If i has no parents or all parents are in the observation list, we can just sample it, add to pi_nodes
+            if len(list(graph.predecessors(i))) == 0 or \
+                    all([j in observation_list.keys() for j in graph.predecessors(i)]):
+                pi_nodes[i] = observation_list[i]
+        if len(pi_nodes) == 0:
+            self.intervene_data(data, pi_nodes, method="root_nodes", random_state=random_state)
+
         if not is_scm:
             unobserved_vars = set(self.get_variables()).difference(set(observation_list.keys()))
             joint_markov_blanket = self.joint_markov_blanket(list(unobserved_vars))

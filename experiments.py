@@ -1,4 +1,5 @@
 import itertools
+import os
 import time
 from functools import partial
 
@@ -56,8 +57,8 @@ def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_v
 def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs,
                              all_vars, joint_data):
     local_results = []
-    local_result_mat = np.zeros((9, 2))
-    local_count_mat = np.zeros((9, 2))
+    local_result_mat = np.zeros((9, 8))
+    local_count_mat = np.zeros((9, 8))
 
     k = len(observation_vars)
     obs_index = k - 1
@@ -131,17 +132,21 @@ def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps,
     return local_results, local_result_mat, local_count_mat
 
 
-def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parallel=True):
+def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parallel=True, large_backdoor=False):
     marginal_means = compute_marginal_means(model)
     joint_data = model.generate_data(1000)
 
-    # Generate all non-empty subsets of X1-X7
     total_iters = 0
     skipped_iters = 0
-    intervention_combs = [("x" + str(i),) for i in range(0, 8)]  # X1 to X7
-    intervention_combs += [("x0", "x" + str(i)) for i in range(1, 8)]  # X0 with X1 to X7
-    intervention_combs += list(itertools.product(["x1", "x3", "x5", "x7"], ["x2", "x4", "x6"]))
     all_vars = ['x' + str(i) for i in range(0, 9)]  # X1 to X7
+    if large_backdoor:
+        intervention_combs = [("x" + str(i),) for i in range(0, 8)]  # X1 to X7
+        intervention_combs += [("x0", "x" + str(i)) for i in range(1, 8)]  # X0 with X1 to X7
+        intervention_combs += list(itertools.product(["x1", "x3", "x5", "x7"], ["x2", "x4", "x6"]))
+    else :
+        intervention_combs = []
+        for k in range(1, len(all_vars[:-1]) + 1):
+            intervention_combs.extend(list(itertools.combinations(all_vars[:-1], k)))
 
     # Prepare arguments for parallel processing
     observation_combinations = []
@@ -195,13 +200,21 @@ if __name__ == "__main__" :
     # Add command line args
     parser = argparse.ArgumentParser(description="Run causal experiments with SCM and CBN models.")
     parser.add_argument('--parallel', action='store_true', help="Run experiments in parallel")
+    parser.add_argument('--struct', choices=['large_backdoor', 'weak_arrow'], default='large_backdoor',
+                        help="Select the structural model to use: 'large_backdoor' or 'weak_arrow'")
     args = parser.parse_args()
 
     #mp.set_start_method('spawn')
-    N = 10000000
+    N = 1000000
     eps = 0.05
-    scm = get_large_backdoor_scm()
-    cbn = get_large_backdoor_cbn()
+    is_large_backdoor = False
+    if args.struct == ('large_backdoor'):
+        scm = get_large_backdoor_scm()
+        cbn = get_large_backdoor_cbn()
+        is_large_backdoor = True
+    elif args.struct == ('weak_arrow'):
+        scm = get_large_backdoor_scm()
+        cbn = get_weak_arrow_scm()
     '''end_vars = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"]
     data = scm.generate_data(10000)
     #data = scm.get_observational_data_kde(N, [("x"+str(i), data[end_vars[i]].mean()) for i in range(1)], eps,
@@ -245,14 +258,17 @@ if __name__ == "__main__" :
 
     # Run the full experiment suite
     t0 = time.time()
-    results, mat, mat_univariate = full_experiment_suite(scm, cbn, N, eps, parallel=args.parallel)
+    results, mat, mat_univariate = full_experiment_suite(scm, cbn, N, eps, parallel=args.parallel,
+                                                         large_backdoor=is_large_backdoor)
+    results_dir = "./results"
+    results_dir = os.path.join(results_dir, args.struct)
     t1 = time.time()
     print(f"Experiment completed in {t1 - t0:.2f} seconds.")
     # Save result to json
-    results.to_json("results.json", orient="records", lines=True)
+    results.to_json(os.path.join(results_dir, "results.json"), orient="records", lines=True)
     # Save matrix to csv
-    mat.to_csv("result_matrix.csv", index=True)
+    mat.to_csv(os.path.join(results_dir, "result_matrix.csv"), index=True)
     # Save univariate matrix to csv
-    mat_univariate.to_csv("univariate_matrix.csv", index=True)
+    mat_univariate.to_csv(os.path.join(results_dir, "univariate_matrix.csv"), index=True)
     print(mat)
     print(mat_univariate)
