@@ -179,7 +179,6 @@ class Model:
             if len(list(graph.predecessors(i))) == 0 or \
                     all([j in observation_list.keys() for j in graph.predecessors(i)]):
                 pi_nodes[i] = observation_list[i]
-        if len(pi_nodes) == 0:
         if len(pi_nodes) > 0:
             data = self.intervene_data(data, pi_nodes, method="root_nodes", random_state=random_state)
 
@@ -212,8 +211,7 @@ class Model:
             data = self.fill_exogenous_data(data)
         # Let's do that in an a
         if data.shape[0] == 0:
-            print("Error with observations", observation_list)
-            raise Exception('No data generated with the given observations')
+            raise Exception('No data generated with the given observations ' + str(observation_list))
         return data
 
     def get_observational_data_kde(self, nb_samples: int, observation_list, eps=1e-8, random_state: int = 42,

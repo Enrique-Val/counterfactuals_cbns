@@ -56,12 +56,14 @@ def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_v
 
 
 def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs,
-                             all_vars, joint_data):
+                             all_vars):
     local_results = []
     local_result_mat = np.zeros((9, 8))
     local_count_mat = np.zeros((9, 8))
 
     k = len(observation_vars)
+    if k == 4 or k == 5:
+        eps = eps*2
     obs_index = k - 1
     observation_set = {v: marginal_means[v] for v in observation_vars}
     observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps,
@@ -83,7 +85,7 @@ def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps,
             print("Skipped")
             print(
                 f"Skipping intervention {intervention_vars} with observations {observation_vars} due to d-separation condition.")
-            x8_samples = model.intervene_data(joint_data, intervention_list=intervention_set,
+            x8_samples = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
                                               method='non_descendants')
             x8_samples = x8_samples['x8']
             local_results.append({
@@ -160,12 +162,12 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
         results = []
         for observation_combination in observation_combinations:
             results.append(process_observation_vars(observation_combination, model, model_cbn, n_samples, eps,
-                                     marginal_means, intervention_combs, all_vars, joint_data))
+                                     marginal_means, intervention_combs, all_vars))
     else :
         pool = mp.Pool(processes=mp.cpu_count()-1)
         results = pool.starmap(
             process_observation_vars,
-            [(obs_comb, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars, joint_data)
+            [(obs_comb, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars)
              for obs_comb in observation_combinations]
         )
         pool.close()
@@ -206,7 +208,7 @@ if __name__ == "__main__" :
                         help="Select the structural model to use: 'large_backdoor' or 'weak_arrow'")
     args = parser.parse_args()
 
-    #mp.set_start_method('spawn')
+    mp.set_start_method('spawn')
     N = 1000000
     eps = 0.05
     is_large_backdoor = False
