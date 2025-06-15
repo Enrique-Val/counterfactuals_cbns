@@ -5,7 +5,7 @@ from causal_ale.model import Model
 
 import numpyro.distributions as dist
 
-from causal_ale.pyro_utils import layer, layerm, invert_layer
+from causal_ale.pyro_utils import layer, layerm, invert_layer, inv_softplus
 from jax import nn
 
 
@@ -21,8 +21,10 @@ def get_large_backdoor_scm() -> Model:
         model_builder.add_equation(u, noise=norm(0, 1))
 
     # x0 (special case)
+    def inv_x0(u, x0):
+        return (inv_softplus(x0 + 1) / 1.8)
     model_builder.add_equation("x0", ["U_x0"], lambda u,u_x0: nn.softplus(1.8 * u_x0) - 1)
-    model_builder.add_inverse_equation("U_x0", ["x0"], lambda u,x0: (nn.inv_softplus(x0 + 1) / 1.8))
+    model_builder.add_inverse_equation("U_x0", ["x0"], inv_x0)
 
     # x1 (special case)
     model_builder.add_equation("x1", ["x0", "U_x1"], lambda u,x0,u_x1: layer(x0, 0)*1.5 + 0.25*u_x1)
@@ -37,9 +39,9 @@ def get_large_backdoor_scm() -> Model:
             lambda u,parent_val, u_assoc: layer(parent_val, u_assoc)
         )
         model_builder.add_inverse_equation(
-            parent,
-            [f"x{i}", f"U_x{i}"],
-            lambda u,x_i, u_assoc: invert_layer(x_i, u_assoc)
+            f"U_x{i}",
+            [f"x{i}", parent],
+            lambda u,x_i, parent: invert_layer(x_i, parent)
         )
 
     # Treatment (x7)

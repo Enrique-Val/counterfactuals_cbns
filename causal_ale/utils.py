@@ -30,6 +30,7 @@ def make_equation(variable, parents=None, function=identity, noise=norm(0, 0), v
     if parents is None:
         parents = []
     if var_dict is None:
+        raise ValueError("var_dict must be provided")
         var_dict = bidict({i: var for i, var in enumerate([variable] + parents)})
     index_lhs = var_dict.inverse[variable]
     indices_rhs = [var_dict.inverse[i] for i in parents]

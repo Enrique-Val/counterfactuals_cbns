@@ -20,15 +20,15 @@ def compute_marginal_means(model : Model):
     # Run inference/sampling on base model to get marginals
     samples = model.generate_data(10000)  # Your inference method here
     return {
-        'x0': np.mean(samples['x0']),
-        'x1': np.mean(samples['x1']),
-        'x2': np.mean(samples['x2']),
-        'x3': np.mean(samples['x3']),
-        'x4': np.mean(samples['x4']),
-        'x5': np.mean(samples['x5']),
-        'x6': np.mean(samples['x6']),
-        'x7': np.mean(samples['x7']),
-        'x8': np.mean(samples['x8'])
+        'x0': np.median(samples['x0']),
+        'x1': np.median(samples['x1']),
+        'x2': np.median(samples['x2']),
+        'x3': np.median(samples['x3']),
+        'x4': np.median(samples['x4']),
+        'x5': np.median(samples['x5']),
+        'x6': np.median(samples['x6']),
+        'x7': np.median(samples['x7']),
+        'x8': np.median(samples['x8'])
     }
 
 def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_vars) :
@@ -38,7 +38,8 @@ def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_v
     for i in range(9):
         observation_var = f"x{i}"
         observation_set = {observation_var: marginal_means[observation_var]}
-        observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps)
+        observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps,
+                                                              is_scm = True)
         observational_data_cbn = observational_data_scm[all_vars]  # CBN uses the same observational data
         for j, intervention_set in enumerate(univariate_int_combs):
             x8_samples_scm = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
@@ -63,7 +64,8 @@ def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps,
     k = len(observation_vars)
     obs_index = k - 1
     observation_set = {v: marginal_means[v] for v in observation_vars}
-    observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps)
+    observational_data_scm = model.get_observational_data(n_samples, observation_list=observation_set, eps=eps,
+                                                          is_scm=True)
     observational_data_cbn = observational_data_scm[all_vars]  # CBN uses the same observational data
 
     # Ancestor set
@@ -172,8 +174,8 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
 
     # Combine results
     combined_results = []
-    combined_result_mat = np.zeros((9, 2))
-    combined_count_mat = np.zeros((9, 2))
+    combined_result_mat = np.zeros((9, 8))
+    combined_count_mat = np.zeros((9, 8))
 
     for result in results:
         res, res_mat, count_mat = result
@@ -191,7 +193,7 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
     print(f"Total iterations: {total_iters}, Skipped iterations: {skipped_iters}")
     average_var_mat = np.divide(combined_result_mat, combined_count_mat)
 
-    average_var_mat = pd.DataFrame(average_var_mat, columns=["Intervention 1", "Intervention 2"], index=[f"Observation {i+1}" for i in range(9)])
+    average_var_mat = pd.DataFrame(average_var_mat, columns=[f"Intervention {i+1}" for i in range(8)], index=[f"Observation {i+1}" for i in range(9)])
 
 
     return pd.DataFrame(combined_results), average_var_mat, matrix_univariate
@@ -262,6 +264,8 @@ if __name__ == "__main__" :
                                                          large_backdoor=is_large_backdoor)
     results_dir = "./results"
     results_dir = os.path.join(results_dir, args.struct)
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
     t1 = time.time()
     print(f"Experiment completed in {t1 - t0:.2f} seconds.")
     # Save result to json

@@ -180,7 +180,8 @@ class Model:
                     all([j in observation_list.keys() for j in graph.predecessors(i)]):
                 pi_nodes[i] = observation_list[i]
         if len(pi_nodes) == 0:
-            self.intervene_data(data, pi_nodes, method="root_nodes", random_state=random_state)
+        if len(pi_nodes) > 0:
+            data = self.intervene_data(data, pi_nodes, method="root_nodes", random_state=random_state)
 
         if not is_scm:
             unobserved_vars = set(self.get_variables()).difference(set(observation_list.keys()))
@@ -211,6 +212,7 @@ class Model:
             data = self.fill_exogenous_data(data)
         # Let's do that in an a
         if data.shape[0] == 0:
+            print("Error with observations", observation_list)
             raise Exception('No data generated with the given observations')
         return data
 
@@ -358,9 +360,16 @@ class Model:
             raise Exception('Data contains NaN values over the endogenous variables. Please provide a complete dataset.')
 
         data = data.copy()
+
+        # First, we have to rename columns using the var_dict inverse
+        data = data.rename(self.var_dict.inverse, axis='columns')
+
         for structural_equation in self.inverse_functions:
-            if not self.var_dict[structural_equation.index_lhs] in data.columns:
-                data = structural_equation.generate_data(data)
+            data = structural_equation.generate_data(data)
+
+        # Now, restore the original names
+        data = data.rename(self.var_dict, axis='columns')
+
         return data
 
     ###################

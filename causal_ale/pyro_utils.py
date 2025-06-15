@@ -13,6 +13,11 @@ from numpyro import plate
 from numpyro.handlers import condition, do, seed, trace
 from numpyro.infer import MCMC, NUTS
 
+def inv_softplus(x):
+    """
+    Inverse of softplus function
+    """
+    return np.log(np.exp(x) - 1.)
 
 def layer(parent, x_noise):
     """
@@ -20,14 +25,14 @@ def layer(parent, x_noise):
     """
     return nn.softplus(parent + 1) + nn.softplus(0.5 + x_noise) - 3.0
 
-# x+ 3 - nn.softplus(x + 1) = nn.softplus(0.5 + x_noise)
-# nn.inv_softplus(x+ 3 - nn.softplus(x + 1)) - 0.5
+# x+ 3 - nn.softplus(parent + 1) = nn.softplus(0.5 + x_noise)
+# x_noise = nn.inv_softplus(x+ 3 - nn.softplus(parent + 1)) - 0.5
 
-def invert_layer(parent, x):
+def invert_layer(x, parent):
     """
     Inverts the layer function, reversing the sign of input
     """
-    return nn.inv_softplus(x+ 3 - nn.softplus(x + 1)) - 0.5
+    return inv_softplus(x+ 3 - nn.softplus(parent + 1)) - 0.5
 
 def layerm(parent, x_noise):
     """
