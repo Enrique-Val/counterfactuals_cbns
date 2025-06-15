@@ -1,19 +1,22 @@
 import itertools
 import os
 import time
-from functools import partial
 
 import networkx as nx
 import numpy as np
 import pandas as pd
+from jax import nn
 
 from causal_ale.model import Model
 import matplotlib.pyplot as plt
 
 import multiprocess as mp
 
-from exp_models import get_large_backdoor_scm, get_weak_arrow_scm, get_large_backdoor_cbn
+from causal_ale.pyro_utils import inv_softplus
+from exp_models import get_large_backdoor_scm, get_weak_arrow_scm, get_large_backdoor_cbn, get_weak_arrow_cbn
 import argparse
+
+import seaborn as sns
 
 def compute_marginal_means(model : Model):
     """Returns dict of marginal means for X1-X7"""
@@ -54,9 +57,13 @@ def univariate_experiment(model,model_cbn, n_samples, eps, marginal_means, all_v
                                      index=[f"Observing x{i}" for i in range(9)])
     return matrix_univariate
 
+def worker(args):
+    observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars, joint_data = args
+    return process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means,
+                                    intervention_combs, all_vars, joint_data)
 
 def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps, marginal_means, intervention_combs,
-                             all_vars):
+                             all_vars, joint_data):
     local_results = []
     local_result_mat = np.zeros((9, 8))
     local_count_mat = np.zeros((9, 8))
@@ -85,7 +92,7 @@ def process_observation_vars(observation_vars, model, model_cbn, n_samples, eps,
             print("Skipped")
             print(
                 f"Skipping intervention {intervention_vars} with observations {observation_vars} due to d-separation condition.")
-            x8_samples = model.intervene_data(observational_data_scm, intervention_list=intervention_set,
+            x8_samples = model.intervene_data(joint_data, intervention_list=intervention_set,
                                               method='non_descendants')
             x8_samples = x8_samples['x8']
             local_results.append({
@@ -162,14 +169,12 @@ def full_experiment_suite(model: Model, model_cbn: Model, n_samples, eps, parall
         results = []
         for observation_combination in observation_combinations:
             results.append(process_observation_vars(observation_combination, model, model_cbn, n_samples, eps,
-                                     marginal_means, intervention_combs, all_vars))
+                                     marginal_means, intervention_combs, all_vars,joint_data))
     else :
-        pool = mp.Pool(processes=mp.cpu_count()-1)
-        results = pool.starmap(
-            process_observation_vars,
-            [(obs_comb, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars)
-             for obs_comb in observation_combinations]
-        )
+        pool = mp.Pool(processes=mp.cpu_count()-1, maxtasksperchild=1)
+        results = pool.imap(worker,
+                            [(obs_combination, model, model_cbn, n_samples, eps, marginal_means, intervention_combs, all_vars, joint_data)
+         for obs_combination in observation_combinations])
         pool.close()
         pool.join()
 
@@ -210,19 +215,20 @@ if __name__ == "__main__" :
 
     mp.set_start_method('spawn')
     N = 1000000
-    eps = 0.05
+    eps = 0.1
     is_large_backdoor = False
     if args.struct == ('large_backdoor'):
         scm = get_large_backdoor_scm()
         cbn = get_large_backdoor_cbn()
         is_large_backdoor = True
     elif args.struct == ('weak_arrow'):
-        scm = get_large_backdoor_scm()
-        cbn = get_weak_arrow_scm()
-    '''end_vars = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"]
-    data = scm.generate_data(10000)
-    #data = scm.get_observational_data_kde(N, [("x"+str(i), data[end_vars[i]].mean()) for i in range(1)], eps,
-                                          #functional=True)
+        scm = get_weak_arrow_scm()
+        cbn = get_weak_arrow_cbn()
+    end_vars = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"]
+
+    '''data = scm.generate_data(10000)
+    data_cbn = cbn.generate_data(10000)
+
     # Create matrix of plots. Diagonal is marginal distribution, else it is scatter plot of variables
     fig, axs = plt.subplots(len(end_vars), len(end_vars), figsize=(30,30))
     for i in range(len(end_vars)):
@@ -231,9 +237,11 @@ if __name__ == "__main__" :
                 # Plot density with seaborn
 
                 sns.histplot(data[end_vars[i]], ax=axs[i, j], stat="density", bins=200)
+                sns.histplot(data_cbn[end_vars[i]], ax=axs[i, j], stat="density", bins=200, color='orange', alpha=0.5)
             else:
                 # Plot scatter plot with seaborn with grid
                 sns.scatterplot(x=data[end_vars[j]], y=data[end_vars[i]], ax=axs[i, j], alpha=0.1)
+                sns.scatterplot(x=data_cbn[end_vars[j]], y=data_cbn[end_vars[i]], ax=axs[i, j], alpha=0.1, color='orange')
                 axs[i, j].set_xlabel(end_vars[j])
                 axs[i, j].set_ylabel(end_vars[i])
     plt.tight_layout()
