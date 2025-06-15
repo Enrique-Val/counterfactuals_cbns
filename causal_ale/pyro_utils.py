@@ -41,6 +41,11 @@ def layerm(parent, x_noise):
     """
     return nn.softplus(-parent + 1.5) + nn.softplus(0.5 + x_noise) - 3
 
+def invert_layerm(x, parent):
+    """
+    Inverts the layerm function, reversing the sign of input
+    """
+    return inv_softplus(x + 3 - nn.softplus(-parent + 1.5)) - 0.5
 
 def expand_model(model, expansion_factor, plate_name="outer_plate"):
     def expanded_model(*args, **kwargs):
