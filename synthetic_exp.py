@@ -59,77 +59,85 @@ def experiment_counterfactual(scm, i,j, v=0.0):
 
     return meanX_cf, covX_cf, i, j
 
-def experiment_counterfactual_mvn(scm,i,j, v=0.0):
+
+import numpy as np
+import time
+import argparse
+from scipy.linalg import sqrtm
+
+
+# Assuming scm_to_mvn, scm_from_dag, random_dag are defined elsewhere in your code
+
+def experiment_counterfactual_mvn(scm, obs_indices, int_indices, v=None):
     mu, Sigma, A = scm_to_mvn(scm)
     d = A.shape[0]
+
+    # Default observation vector to zeros if not provided
+    if v is None:
+        v = np.zeros(len(obs_indices))
 
     ############################################################
     # 1. Structural Mutilation (Action)
     ############################################################
-    # Recover B from A, mutilate it, and compute A_cf
     B = np.eye(d) - np.linalg.inv(A)
     B_cf = B.copy()
-    B_cf[j, :] = 0.0
+    B_cf[int_indices, :] = 0.0  # Zero out all intervened rows
     A_cf = np.linalg.inv(np.eye(d) - B_cf)
 
-    # Matrix to zero out the j-th exogenous noise
+    # Matrix to zero out the exogenous noise for all intervened vars
     J = np.eye(d)
-    J[j, j] = 0.0
+    J[int_indices, int_indices] = 0.0
 
     ############################################################
     # 2. The Cross-World Joint MVN Distribution
     ############################################################
-    # Factual covariance (same as Sig_XX from your original code)
     Sig_XX = A @ A.T
-
-    # Counterfactual covariance
     Sig_Xcf_Xcf = A_cf @ J @ A_cf.T
-
-    # Cross-world covariance between Counterfactual X and Factual X
     Sig_Xcf_X = A_cf @ J @ A.T
 
     ############################################################
     # 3. MVN Conditional Distribution (Prediction via Abduction)
-    # Target: X_cf | X_i = v
     ############################################################
-    # We extract the cross-covariance specifically for the observed variable X_i
-    cov_Xcf_Xi = Sig_Xcf_X[:, i]
-    var_Xi = Sig_XX[i, i]
+    # Extract submatrices for the observed variables
+    cov_Xcf_Xobs = Sig_Xcf_X[:, obs_indices]
 
-    # Standard MVN Conditional Formulas:
-    # mu_a|b = mu_a + Cov(a,b) * Var(b)^-1 * (b - mu_b)
-    # Cov_a|b = Var(a) - Cov(a,b) * Var(b)^-1 * Cov(b,a)
+    # np.ix_ allows us to extract the square submatrix for the observed vars
+    var_Xobs = Sig_XX[np.ix_(obs_indices, obs_indices)]
 
-    meanX_cf_mvn = cov_Xcf_Xi * (v / var_Xi)
-    covX_cf_mvn = Sig_Xcf_Xcf - np.outer(cov_Xcf_Xi, cov_Xcf_Xi) / var_Xi
+    # Standard MVN Conditional Formulas using matrix inversion
+    inv_var_Xobs = np.linalg.inv(var_Xobs)
 
-    return meanX_cf_mvn, covX_cf_mvn, i, j
+    meanX_cf_mvn = cov_Xcf_Xobs @ inv_var_Xobs @ v
+    covX_cf_mvn = Sig_Xcf_Xcf - cov_Xcf_Xobs @ inv_var_Xobs @ cov_Xcf_Xobs.T
+
+    return meanX_cf_mvn, covX_cf_mvn, obs_indices, int_indices
 
 
-def experiment_counterfactual_mixed_mvn(scm, i,j, v=0.0):
+def experiment_counterfactual_mixed_mvn(scm, obs_indices, int_indices, v=None):
     mu, Sigma, A = scm_to_mvn(scm)
     d = A.shape[0]
+
+    if v is None:
+        v = np.zeros(len(obs_indices))
 
     ############################################################
     # 1. Structural Mutilation (Action)
     ############################################################
     B = np.eye(d) - np.linalg.inv(A)
     B_cf = B.copy()
-    B_cf[j, :] = 0.0
+    B_cf[int_indices, :] = 0.0
     A_cf = np.linalg.inv(np.eye(d) - B_cf)
 
     J = np.eye(d)
-    J[j, j] = 0.0
+    J[int_indices, int_indices] = 0.0
 
     ############################################################
     # 2. Identify Descendants & Create Mask Matrix M
     ############################################################
-    # In the structural matrix A, A[k, j] != 0 means U_j affects X_k.
-    # Therefore, k is a descendant of j if A[k, j] is non-zero.
-    is_descendant = np.abs(A[:, j]) > 1e-9
-    is_descendant[j] = False  # The intervened variable is handled by J
+    # Node k is a descendant if A[k, j] is non-zero for ANY j in int_indices
+    is_descendant = np.any(np.abs(A[:, int_indices]) > 1e-9, axis=1)
+    is_descendant[int_indices] = False  # Intervened variables handled by J
 
-    # M_kk = 1 if non-descendant (keep covariance), 0 if descendant (break covariance)
     M_diag = np.where(is_descendant, 0.0, 1.0)
     M = np.diag(M_diag)
 
@@ -137,44 +145,21 @@ def experiment_counterfactual_mixed_mvn(scm, i,j, v=0.0):
     # 3. The Modified Cross-World Joint MVN
     ############################################################
     Sig_XX = A @ A.T
-
-    # Unchanged: The marginal variance of U_cf is still I
     Sig_Xcf_Xcf = A_cf @ J @ A_cf.T
-
-    # CHANGED: We insert M to break the covariance for descendants
     Sig_Xcf_X = A_cf @ J @ M @ A.T
 
     ############################################################
     # 4. MVN Conditional Distribution (Prediction)
     ############################################################
-    cov_Xcf_Xi = Sig_Xcf_X[:, i]
-    var_Xi = Sig_XX[i, i]
+    cov_Xcf_Xobs = Sig_Xcf_X[:, obs_indices]
+    var_Xobs = Sig_XX[np.ix_(obs_indices, obs_indices)]
 
-    meanX_cf_mvn = cov_Xcf_Xi * (v / var_Xi)
-    covX_cf_mvn = Sig_Xcf_Xcf - np.outer(cov_Xcf_Xi, cov_Xcf_Xi) / var_Xi
+    inv_var_Xobs = np.linalg.inv(var_Xobs)
 
-    return meanX_cf_mvn, covX_cf_mvn, i, j
+    meanX_cf_mvn = cov_Xcf_Xobs @ inv_var_Xobs @ v
+    covX_cf_mvn = Sig_Xcf_Xcf - cov_Xcf_Xobs @ inv_var_Xobs @ cov_Xcf_Xobs.T
 
-
-def kl_same_mean(cov_p, cov_q):
-    """
-    Computes the standard KL divergence KL(P || Q) between two Gaussians
-    with the same mean, where P is the true distribution and Q is the approximation.
-    """
-    d = cov_p.shape[0]
-
-    # Use slogdet for better numerical stability than np.linalg.det
-    _, logdet_p = np.linalg.slogdet(cov_p)
-    _, logdet_q = np.linalg.slogdet(cov_q)
-
-    # We only need the inverse of the approximate distribution's covariance
-    inv_cov_q = np.linalg.inv(cov_q)
-
-    # Calculate KL(P || Q)
-    kl_divergence = 0.5 * (np.trace(inv_cov_q @ cov_p) - d + logdet_q - logdet_p)
-
-    return kl_divergence
-
+    return meanX_cf_mvn, covX_cf_mvn, obs_indices, int_indices
 
 def wasserstein_distance_same_mean(cov1, cov2):
     """
@@ -182,10 +167,21 @@ def wasserstein_distance_same_mean(cov1, cov2):
     with the same mean, given their covariance matrices.
     """
     # 1. Compute the matrix square root of cov1
-    sqrt_cov1 = sqrtm(cov1)
+    # 1. Decompose the matrix
+    eigenvalues, eigenvectors = np.linalg.eigh(cov1)
+
+    # 2. Force any tiny negative floating point errors to be exactly 0
+    eigenvalues[eigenvalues < 0] = 0
+
+    # 3. Reconstruct the square root matrix manually
+    sqrt_cov1 = eigenvectors @ np.diag(np.sqrt(eigenvalues)) @ eigenvectors.T
+
+    print("Sqrt of cov1:\n", np.round(sqrt_cov1, 4))
 
     # 2. Compute the inner term: sqrt(cov1) * cov2 * sqrt(cov1)
     inner_term = sqrt_cov1 @ cov2 @ sqrt_cov1
+
+    print("Inner term before sqrt:\n", np.round(inner_term, 4))
 
     # 3. Compute the matrix square root of the inner term
     sqrt_inner_term = sqrtm(inner_term)
@@ -202,35 +198,69 @@ def wasserstein_distance_same_mean(cov1, cov2):
     # Return the actual distance (not squared)
     return np.sqrt(w2_squared)
 
-if __name__ == "__main__":
-    # Add command line args
-    parser = argparse.ArgumentParser(description="Run causal experiments with SCM and CBN models.")
-    parser.add_argument('--p', type=float, default=0.5, help="Probability of edge creation in the random DAG")
-    parser.add_argument('--parallel', action='store_true', help="Run experiments in parallel")
-
-    args = parser.parse_args()
-    t0 = time.time()
-    prob_arcs = 0.8
-    d=8
-    dag = random_dag(d=d, p=prob_arcs)
+def build_graph_plus_counterfactual_experiment(d=4, p=0.5, num_obs=2, num_ints=2):
+    # Generate a random DAG and corresponding SCM
+    dag = random_dag(d=d, p=p)
     print("Generated DAG (Parents List):", dag)
-    scm = scm_from_dag(dag)
-    i = np.random.randint(0, d)  # Variable to condition on (Observation)
-    j = np.random.randint(0, d)  # Variable to intervene on (Action)
-    print("Observing variable index (i):", i)
-    print("Intervening variable index (j):", j)
-    res_mvn = experiment_counterfactual_mvn(scm,i,j)
-    res_mixed_mvn = experiment_counterfactual_mixed_mvn(scm,i,j)
 
-    # Compute JSD between the two counterfactual distributions (assume they are Gaussian and the means are the same for simplicity)
+    scm = scm_from_dag(dag)
+
+    # Run the counterfactual experiment with multiple observations and interventions
+    wass = counterfactual_experiment(scm, num_obs=num_obs, num_ints=num_ints)
+    return wass
+    print(f"Final Wasserstein Distance: {wass:.4f}")
+
+def counterfactual_experiment(scm, num_obs, num_ints):
+    d = len(scm["nodes"])
+    # Randomly select multiple unique variables for observation and intervention
+    obs_indices = np.random.choice(d, num_obs, replace=False)
+    int_indices = np.random.choice(d, num_ints, replace=False)
+
+    print("Observing variable indices:", obs_indices)
+    print("Intervening variable indices:", int_indices)
+
+    res_mvn = experiment_counterfactual_mvn(scm, obs_indices, int_indices)
+    res_mixed_mvn = experiment_counterfactual_mixed_mvn(scm, obs_indices, int_indices)
+
     mean_cf_mvn, cov_cf_mvn, _, _ = res_mvn
     mean_cf_mixed, cov_cf_mixed, _, _ = res_mixed_mvn
 
-    print("Cov of MVN Counterfactual:\n", cov_cf_mvn)
-    print("Cov of Mixed-MVN Counterfactual:\n", cov_cf_mixed)
+    print("Cov of MVN Counterfactual:\n", np.round(cov_cf_mvn, 4))
+    print("Cov of Mixed-MVN Counterfactual:\n", np.round(cov_cf_mixed, 4))
 
     wass = wasserstein_distance_same_mean(cov_cf_mvn, cov_cf_mixed)
     print(f"Wasserstein Distance between MVN and Mixed-MVN counterfactuals: {wass:.4f}")
-    print(f"Time taken: {time.time() - t0:.2f} seconds")
+
+    return wass
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run causal experiments with SCM and CBN models.")
+    parser.add_argument('--p', type=float, default=0.5, help="Probability of edge creation")
+    parser.add_argument('--d', type=int, default=8, help="Number of nodes")
+    args = parser.parse_args()
+
+    results_df = pd.DataFrame(columns=['num_obs', 'num_ints', 'mean_wass', 'std_wass', 'time_seconds'])
+
+    for num_obs in range(1, args.d) :
+        for num_ints in range(1, args.d) :
+            print(f"\nRunning experiment with {num_obs} observations and {num_ints} interventions...")
+
+            t0 = time.time()
+            wass_list = []
+            for _ in range(10000):  # Run multiple trials to get an average Wasserstein
+                wass = build_graph_plus_counterfactual_experiment(d=args.d, p=args.p, num_obs=num_obs, num_ints=num_ints)
+                wass_list.append(wass)
+            tn = time.time()
+
+            print("Mean Wasserstein Distance over 1000 trials:", np.mean(wass_list))
+            print("Standard Deviation of Wasserstein Distance over 1000 trials:", np.std(wass_list))
+            print(f"Total time for 1000 trials: {tn - t0:.2f} seconds")
+            results_df = results_df.append({
+                'num_obs': num_obs,
+                'num_ints': num_ints,
+                'mean_wass': np.mean(wass_list),
+                'std_wass': np.std(wass_list),
+                'time_seconds': tn - t0
+            }, ignore_index=True)
 
 
