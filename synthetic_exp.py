@@ -1,10 +1,9 @@
-import argparse
+import os
 import time
 
 import numpy as np
 import pandas as pd
-from scipy.linalg import sqrtm
-from scipy.stats import norm
+from scipy.stats import sem, skew, kurtosis
 
 from causal_ale import utils
 from causal_ale.build_model import ModelBuilder
@@ -176,12 +175,8 @@ def wasserstein_distance_same_mean(cov1, cov2):
     # 3. Reconstruct the square root matrix manually
     sqrt_cov1 = eigenvectors @ np.diag(np.sqrt(eigenvalues)) @ eigenvectors.T
 
-    print("Sqrt of cov1:\n", np.round(sqrt_cov1, 4))
-
     # 2. Compute the inner term: sqrt(cov1) * cov2 * sqrt(cov1)
     inner_term = sqrt_cov1 @ cov2 @ sqrt_cov1
-
-    print("Inner term before sqrt:\n", np.round(inner_term, 4))
 
     # 3. Compute the matrix square root of the inner term
     sqrt_inner_term = sqrtm(inner_term)
@@ -201,7 +196,6 @@ def wasserstein_distance_same_mean(cov1, cov2):
 def build_graph_plus_counterfactual_experiment(d=4, p=0.5, num_obs=2, num_ints=2):
     # Generate a random DAG and corresponding SCM
     dag = random_dag(d=d, p=p)
-    print("Generated DAG (Parents List):", dag)
 
     scm = scm_from_dag(dag)
 
@@ -216,8 +210,6 @@ def counterfactual_experiment(scm, num_obs, num_ints):
     obs_indices = np.random.choice(d, num_obs, replace=False)
     int_indices = np.random.choice(d, num_ints, replace=False)
 
-    print("Observing variable indices:", obs_indices)
-    print("Intervening variable indices:", int_indices)
 
     res_mvn = experiment_counterfactual_mvn(scm, obs_indices, int_indices)
     res_mixed_mvn = experiment_counterfactual_mixed_mvn(scm, obs_indices, int_indices)
@@ -225,42 +217,67 @@ def counterfactual_experiment(scm, num_obs, num_ints):
     mean_cf_mvn, cov_cf_mvn, _, _ = res_mvn
     mean_cf_mixed, cov_cf_mixed, _, _ = res_mixed_mvn
 
-    print("Cov of MVN Counterfactual:\n", np.round(cov_cf_mvn, 4))
-    print("Cov of Mixed-MVN Counterfactual:\n", np.round(cov_cf_mixed, 4))
+    #print("Cov of MVN Counterfactual:\n", np.round(cov_cf_mvn, 4))
+    #print("Cov of Mixed-MVN Counterfactual:\n", np.round(cov_cf_mixed, 4))
 
     wass = wasserstein_distance_same_mean(cov_cf_mvn, cov_cf_mixed)
-    print(f"Wasserstein Distance between MVN and Mixed-MVN counterfactuals: {wass:.4f}")
+    #print(f"Wasserstein Distance between MVN and Mixed-MVN counterfactuals: {wass:.4f}")
 
     return wass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run causal experiments with SCM and CBN models.")
     parser.add_argument('--p', type=float, default=0.5, help="Probability of edge creation")
-    parser.add_argument('--d', type=int, default=8, help="Number of nodes")
+    parser.add_argument('--nodes', type=int, default=8, help="Number of nodes")
+    parser.add_argument('--dir', type=str, default="./results/synthetic", help="Directory to save results to")
     args = parser.parse_args()
 
-    results_df = pd.DataFrame(columns=['num_obs', 'num_ints', 'mean_wass', 'std_wass', 'time_seconds'])
+    res_dir = os.path.join(args.dir, "nodes_"+str(args.nodes))
+    if not os.path.exists(res_dir):
+        os.makedirs(res_dir)
 
-    for num_obs in range(1, args.d) :
-        for num_ints in range(1, args.d) :
+    N = 10000
+
+
+    results_list = []
+
+    for num_obs in range(1, args.nodes+1) :
+        for num_ints in range(1, args.nodes) :
             print(f"\nRunning experiment with {num_obs} observations and {num_ints} interventions...")
 
             t0 = time.time()
             wass_list = []
-            for _ in range(10000):  # Run multiple trials to get an average Wasserstein
-                wass = build_graph_plus_counterfactual_experiment(d=args.d, p=args.p, num_obs=num_obs, num_ints=num_ints)
+            for _ in range(N):  # Run multiple trials to get an average Wasserstein
+                wass = build_graph_plus_counterfactual_experiment(d=args.nodes, p=args.p, num_obs=num_obs, num_ints=num_ints)
                 wass_list.append(wass)
             tn = time.time()
 
-            print("Mean Wasserstein Distance over 1000 trials:", np.mean(wass_list))
-            print("Standard Deviation of Wasserstein Distance over 1000 trials:", np.std(wass_list))
-            print(f"Total time for 1000 trials: {tn - t0:.2f} seconds")
-            results_df = results_df.append({
+            print(f"Total time for {N} trials: {tn - t0:.2f} seconds")
+            print()
+            results_list.append({
+                'nodes': args.nodes,
+                'p': args.p,
                 'num_obs': num_obs,
                 'num_ints': num_ints,
                 'mean_wass': np.mean(wass_list),
                 'std_wass': np.std(wass_list),
-                'time_seconds': tn - t0
-            }, ignore_index=True)
+                'median_wass' : np.median(wass_list),
+                'iqr_wass' : np.percentile(wass_list, 75) - np.percentile(wass_list, 25),
+                'sem_wass': sem(wass_list),
 
+                # Extremes & Tails
+                'min_wass': np.min(wass_list),
+                'max_wass': np.max(wass_list),
+                'p95_wass': np.percentile(wass_list, 95),
+                'p99_wass': np.percentile(wass_list, 99),
+
+                # Shape
+                'skew_wass': skew(wass_list),
+                'kurtosis_wass': kurtosis(wass_list),
+                'time_seconds': tn - t0
+            })
+
+            results_df = pd.DataFrame(results_list)
+            file_name = os.path.join(res_dir, "p_"+str(args.p) + ".csv")
+            results_df.to_csv(file_name, index = False)
 
