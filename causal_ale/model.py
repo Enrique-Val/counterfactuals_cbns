@@ -133,7 +133,7 @@ class Model:
         if method == "root_nodes":
             data = data[self.get_root_nodes()].copy()
         elif method == "non_descendants":
-            total_non_descendants = set()
+            total_non_descendants = set(self.get_variables())
             for i in intervention_list.keys():
                 total_non_descendants = total_non_descendants.intersection(set(self.get_non_descendants(i)))
             data = data[list(total_non_descendants)].copy()
