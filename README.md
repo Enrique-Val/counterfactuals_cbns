@@ -1,2 +1,2 @@
-# causal_ale
-Research about the causal properties of ALE plots
+# counterfactual cbns
+Code for the paper "Structural counterfactual without structural causal models"

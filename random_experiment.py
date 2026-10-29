@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-import causal_ale
-from causal_ale import utils
-from causal_ale.build_model import ModelBuilder
+import counterfactual_cbn
+from counterfactual_cbn import utils
+from counterfactual_cbn.build_model import ModelBuilder
 
 
 def random_dag(d, p=0.5):

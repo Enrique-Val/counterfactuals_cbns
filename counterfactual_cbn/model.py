@@ -195,6 +195,7 @@ class Model:
             joint_markov_blanket = self.joint_markov_blanket(list(unobserved_vars))
             observed_in_mb = list(set(observation_list.keys()).intersection(set(joint_markov_blanket)))
             non_mb_vars = list(set(list(observation_list.keys())).difference(set(joint_markov_blanket)))
+        print("Total MB", observed_in_mb)
         for i in observed_in_mb:
             if i not in data.columns:
                 raise Exception('Node ', i, " not present in the model")
@@ -208,6 +209,7 @@ class Model:
             data[i] = observation_list[i]
         # Now, if it is a SCM, we still need to compute the values of the exogenous variables
         if is_scm:
+            print("Entra ex")
             data = self.fill_exogenous_data(data)
         # Let's do that in an a
         if data.shape[0] == 0:

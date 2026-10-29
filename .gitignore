@@ -169,3 +169,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+/experiments/results/applied/samples
+/experiments/results/applied
+/experiments/results/synthetic
+*.pdf
+*.png
+/experiments/results/weak_arrow
+/experiments/results/large_backdoor
+/results/synthetic/nodes_8
+/results/synthetic/nodes_8

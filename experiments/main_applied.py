@@ -10,7 +10,7 @@ from scipy.stats import norm, uniform, truncnorm, rv_discrete
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.svm import SVR
 
-from causal_ale.build_model import ModelBuilder
+from counterfactual_cbn.build_model import ModelBuilder
 import seaborn as sns
 import numpy as np
 import pybnesian as pb

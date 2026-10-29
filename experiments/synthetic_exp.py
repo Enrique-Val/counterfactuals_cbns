@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 from scipy.stats import sem, skew, kurtosis
 
-from causal_ale import utils
-from causal_ale.build_model import ModelBuilder
+from counterfactual_cbn import utils
+from counterfactual_cbn.build_model import ModelBuilder
 from random_experiment import random_dag, scm_to_mvn, scm_from_dag
 
 
